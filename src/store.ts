@@ -357,6 +357,8 @@ const useStore = defineStore('store', {
     /** Set or move the link target, then (re)compute the link. */
     setLinkTarget(lat: number, lon: number) {
       this.linkTarget = { lat, lon };
+      // The bridge analysis depends on this target — clear any stale result.
+      this.clearBridge();
       this.drawLink();
       void this.computeLink();
     },
@@ -407,6 +409,8 @@ const useStore = defineStore('store', {
       this.linkAnalysis = null;
       this.linkState = 'idle';
       this.linkError = '';
+      // The bridge analysis depends on the target being present — clear it.
+      this.clearBridge();
       targetMarker?.remove();
       targetMarker = undefined;
       if (map?.getLayer(LINK_LINE_ID)) map.removeLayer(LINK_LINE_ID);
@@ -707,9 +711,11 @@ const useStore = defineStore('store', {
         this.bridgeError = 'Pick a second point on the map first (use "Pick target on map").';
         return;
       }
+      // Invalidate any previous bridge output before starting a new run, so a
+      // stale overlay/result never lingers while (or if) this one computes.
+      this.clearBridge();
       this.bridgeState = 'computing';
       this.bridgeError = '';
-      bridgeAbort?.abort();
       bridgeAbort = new AbortController();
       const signal = bridgeAbort.signal;
       try {
