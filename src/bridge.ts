@@ -58,8 +58,9 @@ export interface BridgeResult {
   overlap: CoverageResult;
   /** Best single placement: cell maximizing min(A,B). null if no overlap. */
   best: BridgeCell | null;
-  /** Signal margin at the best point = best.score - max(thresholdA, thresholdB),
-   * dB (>0 means the bridge is comfortably inside both coverage edges). */
+  /** Signal margin at the best point = the weaker of the two per-link margins
+   * (min(A.dbm - thresholdA, B.dbm - thresholdB)), dB (>0 means the bridge is
+   * comfortably inside both coverage edges). */
   bestMarginDb: number | null;
   /** Ground area of the bridgeable region, km². */
   areaKm2: number;
@@ -90,17 +91,30 @@ function aligned(a: CoverageResult, b: CoverageResult): boolean {
 }
 
 /**
- * Sample B's dBm at an arbitrary (lat, lon) using nearest-neighbor, wrapping
- * longitude safely. Returns NaN when the point is outside B's grid.
- * Only used when A and B are NOT aligned (the common case is aligned).
+ * Sample B's dBm at an arbitrary (lat, lon) using nearest-neighbor. Antimeridian
+ * (period-360) crossing is applied ONLY when B's raster actually crosses the
+ * ±180° meridian (region bounds reported beyond ±180, e.g. west=175, east=182.5);
+ * otherwise a longitude outside [west, east] is genuinely outside B's grid and
+ * returns NaN instead of silently wrapping onto an unrelated column. Only used
+ * when A and B are NOT aligned (the common case is aligned).
  */
 function sampleNearest(result: CoverageResult, lat: number, lon: number): number {
   const { bounds, width, height, pixelDegrees } = result;
   if (lat > bounds.north || lat < bounds.south) return NaN;
   const span = bounds.east - bounds.west;
+  if (!(span > 0)) return NaN;
+  // Rasters whose reported bounds lie either side of ±180° cross the
+  // antimeridian (SPLAT reports signed degrees, so the region spans e.g.
+  // 175…182.5 near lon 180); only those wrap by 360°.
+  const crossesAntimeridian = bounds.west < -180 || bounds.east > 180;
   let frac = (lon - bounds.west) / span;
-  frac = ((frac % 1) + 1) % 1; // wrap into [0,1) (handles antimeridian-crossing rasters)
-  const col = Math.min(width - 1, Math.round(frac * (width - 1)));
+  if (crossesAntimeridian) {
+    frac = ((frac % 1) + 1) % 1; // wrap into [0,1)
+  } else if (frac < 0 || frac > 1) {
+    return NaN; // outside [west, east] — genuinely not on this raster
+  }
+  // Nearest pixel center, clamped to the valid column range.
+  const col = Math.min(width - 1, Math.max(0, Math.round(frac * width - 0.5)));
   const row = Math.max(0, Math.min(height - 1, Math.round((bounds.north - lat) / pixelDegrees - 0.5)));
   return result.dbm[row * width + col];
 }
@@ -159,7 +173,14 @@ export function computeBridge(input: BridgeInput): BridgeResult {
     const lat = A.bounds.north - (bestRow + 0.5) * A.pixelDegrees;
     const lon = A.bounds.west + (bestCol + 0.5) * A.pixelDegrees;
     best = { lat, lon, score: bestScore };
-    bestMarginDb = bestScore - Math.max(ta, tb);
+    // Weaker of the two per-link margins at the best cell (each link's own
+    // threshold), NOT bestScore - max(thresholds) — that pairing is wrong
+    // whenever the two thresholds differ.
+    const aBest = A.dbm[bestRow * A.width + bestCol];
+    const bBest = same
+      ? B.dbm?.[bestRow * A.width + bestCol] ?? NaN
+      : sampleNearest(B, lat, lon);
+    bestMarginDb = Math.min(aBest - ta, bBest - tb);
   }
 
   const overlap: CoverageResult = {

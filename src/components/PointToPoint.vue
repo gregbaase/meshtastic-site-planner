@@ -98,8 +98,13 @@
         >
           Find bridge
         </button>
-        <button v-if="store.bridgeResult" type="button" class="mt-btn mt-btn-secondary mt-btn-sm" @click="store.clearBridge()">
-          Clear
+        <button
+          v-if="store.bridgeResult || store.bridgeState === 'computing'"
+          type="button"
+          class="mt-btn mt-btn-secondary mt-btn-sm"
+          @click="store.clearBridge()"
+        >
+          {{ store.bridgeState === 'computing' ? 'Cancel' : 'Clear' }}
         </button>
       </div>
 
@@ -136,7 +141,7 @@
             Bridge possible — {{ nCells }} candidate cell{{ nCells === 1 ? '' : 's' }} shown on the map
           </div>
           <dl class="mt-link-stats mt-2">
-            <div><dt>Bridgeable area</dt><dd>{{ fmt(store.bridgeResult.areaKm2) }} km²</dd></div>
+            <div><dt>Bridgeable area</dt><dd>{{ fmt(store.bridgeResult.areaKm2, 2) }} km²</dd></div>
             <div><dt>Best relay</dt><dd>{{ store.bridgeResult.best ? `${fmt(store.bridgeResult.best.lat, 5)}, ${fmt(store.bridgeResult.best.lon, 5)}` : '—' }}</dd></div>
             <div><dt>Signal at best</dt><dd>{{ store.bridgeResult.best ? fmt(store.bridgeResult.best.score, 1) : '—' }} dBm</dd></div>
             <div><dt>Margin</dt><dd :class="(store.bridgeResult.bestMarginDb ?? 0) >= 0 ? 'mt-pos' : 'mt-neg'">{{ store.bridgeResult.bestMarginDb == null ? '—' : `${(store.bridgeResult.bestMarginDb >= 0 ? '+' : '')}${fmt(store.bridgeResult.bestMarginDb, 1)} dB` }}</dd></div>
