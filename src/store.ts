@@ -4,11 +4,11 @@ import { randanimalSync } from 'randanimal';
 import maplibregl from 'maplibre-gl';
 import { type Site, type SplatParams } from './types.ts';
 import { cloneObject } from './utils.ts';
-import { draftPinElement, sitePinElement, targetPinElement } from './layers.ts';
+import { draftPinElement, sitePinElement, targetPinElement, bridgePinElement } from './layers.ts';
 import { BASEMAPS, DEFAULT_BASEMAP, applyBasemap, emptyStyle } from './map/styles.ts';
 import { BasemapControl, ExportControl, MeasureControl } from './map/controls.ts';
 import { SearchControl } from './map/search.ts';
-import { coverageImage, cropToRadius } from './map/overlay.ts';
+import { coverageImage, cropToRadius, bridgeSelectionImage } from './map/overlay.ts';
 import { coverageContours } from './map/contours.ts';
 import { canShareFiles, exportGeoJSON, exportKml, exportPngWorldFile, postCoverageToBridge, shareGeoJSON } from './map/export.ts';
 import type { WasmCoverageEngine } from './engine/WasmCoverageEngine.ts';
@@ -25,6 +25,7 @@ import {
   clearSharedQuery,
 } from './permalink.ts';
 import { coverageStats } from './coverageStats.ts';
+import { computeBridge, type BridgeResult } from './bridge.ts';
 import { TerrainService } from './terrain/TerrainService.ts';
 
 // Module-level singletons: workers, terrain cache, and map handles outlive
@@ -43,6 +44,7 @@ let targetMarker: maplibregl.Marker | undefined;
 let linkEscHandler: ((e: KeyboardEvent) => void) | undefined;
 let linkClickHandler: ((e: maplibregl.MapMouseEvent) => void) | undefined;
 let linkAbort: AbortController | undefined;
+let bridgeAbort: AbortController | undefined;
 const LINK_LINE_ID = 'mt-p2p-link';
 // Measure/ruler tool (#15).
 let measureControl: MeasureControl | undefined;
@@ -50,6 +52,10 @@ let measureClickHandler: ((e: maplibregl.MapMouseEvent) => void) | undefined;
 let measureEscHandler: ((e: KeyboardEvent) => void) | undefined;
 let measureA: { lat: number; lon: number } | null = null;
 const MEASURE_SRC = 'mt-measure';
+// Bridge-node placement (#bridge): best-placement marker + overlay source/layer ids.
+let bridgeMarker: maplibregl.Marker | undefined;
+const BRIDGE_SRC = 'mt-bridge';
+const BRIDGE_LAYER = 'mt-bridge';
 
 /** Wrap a longitude into [-180, 180). */
 function wrapLon(lon: number): number {
@@ -237,6 +243,12 @@ const useStore = defineStore('store', {
       /** Measure/ruler tool (#15). */
       measureMode: false,
       measureResult: null as { distanceKm: number; bearingDeg: number } | null,
+      /** Bridge-node placement: reuses the point-to-point link endpoints — the
+       * current transmitter (site A) and the map link target (point B), whose
+       * coverage grids are computed on demand. Stores the overlap + best spot. */
+      bridgeResult: null as BridgeResult | null,
+      bridgeState: 'idle' as 'idle' | 'computing' | 'done' | 'error',
+      bridgeError: '',
     }
   },
   actions: {
@@ -639,6 +651,120 @@ const useStore = defineStore('store', {
       }
     },
 
+    /* ---- Bridge-node placement ---- */
+    /** Remove the bridge overlay, its source, and the best-placement marker. */
+    removeBridgeOverlay() {
+      if (!map) return;
+      for (const id of [BRIDGE_LAYER, `${BRIDGE_LAYER}-line`]) {
+        if (map.getLayer(id)) map.removeLayer(id);
+      }
+      if (map.getSource(BRIDGE_SRC)) map.removeSource(BRIDGE_SRC);
+      bridgeMarker?.remove();
+      bridgeMarker = undefined;
+    },
+    /** All workable bridge cells are shown; the `best` cell is highlighted. */
+    syncBridgeOverlay() {
+      if (!map) return;
+      this.removeBridgeOverlay();
+      const res = this.bridgeResult;
+      // If the sites already talk directly (or have no overlap), there is
+      // no relay zone to draw — the panel conveys the message instead.
+      if (!res || res.directLink || !res.hasOverlap) return;
+      const display = this.splatParams.display;
+      // Distinct green "recommended relay zone" layer, on top of the site
+      // coverage overlays. sensitivity -Infinity keeps every stored overlap
+      // cell visible (NaN is already transparent).
+      const image = bridgeSelectionImage(res.overlap, display, -Infinity);
+      map.addSource(BRIDGE_SRC, {
+        type: 'image',
+        url: image.url,
+        coordinates: image.coordinates,
+      });
+      map.addLayer({
+        id: BRIDGE_LAYER,
+        type: 'raster',
+        source: BRIDGE_SRC,
+        paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest' },
+      });
+      if (res.best && !bridgeMarker) {
+        bridgeMarker = new maplibregl.Marker({ element: bridgePinElement(), anchor: 'bottom' })
+          .setLngLat([res.best.lon, res.best.lat])
+          .addTo(map);
+      }
+    },
+    /**
+     * Bridge the point-to-point link's two endpoints: the current transmitter
+     * (site A, from the link tool's settings) and the map link target (point
+     * B). Both are given the SAME site + receiver values (the device you're
+     * planning for), so each endpoint's coverage grid is computed on demand
+     * with the identical engine, then the usual coverage-overlap analysis
+     * finds where one relay can hear both.
+     */
+    async findBridge() {
+      const b = this.linkTarget;
+      if (!b) {
+        this.bridgeState = 'error';
+        this.bridgeError = 'Pick a second point on the map first (use "Pick target on map").';
+        return;
+      }
+      this.bridgeState = 'computing';
+      this.bridgeError = '';
+      bridgeAbort?.abort();
+      bridgeAbort = new AbortController();
+      const signal = bridgeAbort.signal;
+      try {
+        // Site A is the current transmitter; point B carries the same radio,
+        // moved to the chosen location.
+        const aParams = cloneObject(this.splatParams);
+        const bParams = cloneObject(aParams);
+        bParams.transmitter.tx_lat = b.lat;
+        bParams.transmitter.tx_lon = b.lon;
+        // Widen each endpoint's radius so its coverage reaches the other and
+        // spans the overlap region (capped at the model's data limit).
+        const distKm = haversineKm(aParams.transmitter.tx_lat, aParams.transmitter.tx_lon, b.lat, b.lon);
+        const radius = Math.min(MAX_RADIUS_METERS, Math.max(aParams.simulation.simulation_extent * 1000, (distKm * 1.2 + 2) * 1000));
+
+        const runAt = async (params: SplatParams) => {
+          const request = buildCoverageRequest(params);
+          request.radius = radius;
+          const result = await (await getEngine()).run(toEngineParams(request), { terrain: getTerrain(), signal });
+          if (signal.aborted) return null;
+          return cropToRadius(result, request.lat, request.lon, request.radius);
+        };
+
+        // Run sequentially — the engine is a single-instance worker pool and
+        // only accepts one run() at a time (its `busy` guard throws otherwise).
+        const gridA = await runAt(aParams);
+        if (signal.aborted || !gridA) return;
+        const gridB = await runAt(bParams);
+        if (signal.aborted || !gridB) return;
+
+        this.bridgeResult = computeBridge({
+          resultA: gridA,
+          resultB: gridB,
+          thresholdA: aParams.receiver.rx_sensitivity,
+          thresholdB: bParams.receiver.rx_sensitivity,
+          txLatA: aParams.transmitter.tx_lat,
+          txLonA: aParams.transmitter.tx_lon,
+          txLatB: b.lat,
+          txLonB: b.lon,
+        });
+        this.bridgeState = 'done';
+        this.syncBridgeOverlay();
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        this.bridgeError = error instanceof Error ? error.message : String(error);
+        this.bridgeState = 'error';
+      }
+    },
+    clearBridge() {
+      bridgeAbort?.abort();
+      this.bridgeResult = null;
+      this.bridgeState = 'idle';
+      this.bridgeError = '';
+      this.removeBridgeOverlay();
+    },
+
     removeSite(index: number) {
       const [removed] = this.localSites.splice(index, 1)
       if (removed) {
@@ -738,6 +864,9 @@ const useStore = defineStore('store', {
           });
         }
       });
+      // Re-apply the bridge relay-zone layer LAST so it always sits on top of
+      // the per-site coverage overlays (even after toggling site visibility).
+      this.syncBridgeOverlay();
     },
     initMap() {
       map = new maplibregl.Map({

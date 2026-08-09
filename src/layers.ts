@@ -58,3 +58,27 @@ export function targetPinElement(): HTMLElement {
   el.innerHTML = TARGET_PIN_SVG;
   return el;
 }
+
+/* Recommended bridge-relay pin: a YELLOW teardrop carrying a Venn "inner-join"
+ * glyph. Section A (left-only) is yellow, the overlap lens AB is black, section
+ * B (right-only) is yellow — so the shared join region reads as the shaded
+ * intersection. Distinct from the green/site and blue/target pins. Anchored at
+ * 'bottom' like the other markers. */
+const BRIDGE_PIN_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" width="34" height="44" viewBox="0 0 34 44">
+  <path d="M17 1C8.16 1 1 8.16 1 17c0 11.5 13.2 24.06 15.06 25.78a1.4 1.4 0 0 0 1.88 0C19.8 41.06 33 28.5 33 17 33 8.16 25.84 1 17 1Z"
+        fill="#f5c518" stroke="#0f1017" stroke-width="1.5"/>
+  <svg x="5" y="10" width="24" height="20" viewBox="0 0 24 20" preserveAspectRatio="xMidYMid meet">
+    <path d="M12 3.68 A7 7 0 0 1 12 16.32 A7 7 0 0 1 12 3.68 Z" fill="#000000"/>
+    <circle cx="9"  cy="10" r="7" fill="none" stroke="#0f1017" stroke-width="1.8"/>
+    <circle cx="15" cy="10" r="7" fill="none" stroke="#0f1017" stroke-width="1.8"/>
+  </svg>
+</svg>`;
+
+/** Marker for the recommended bridge-relay placement (yellow join pin). */
+export function bridgePinElement(): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'mt-pin mt-pin-bridge';
+  el.innerHTML = BRIDGE_PIN_SVG;
+  return el;
+}

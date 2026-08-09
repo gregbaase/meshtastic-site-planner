@@ -73,6 +73,92 @@
         Recompute with current settings
       </button>
     </div>
+
+    <!-- Bridge-node placement: only relevant when the direct link can't get
+         through (below sensitivity). Reuses these same endpoints — the current
+         transmitter and the target above — to find where one added node could
+         relay between them. -->
+    <div
+      v-if="store.linkAnalysis && store.linkAnalysis.marginDb < 0"
+      class="mt-4 border-t border-line pt-3"
+    >
+      <p class="mt-hint mb-3">
+        The direct link can't reach here. Want to add a relay instead? The
+        planner runs the same radio model at the transmitter and this target,
+        then highlights everywhere a single added node could bridge them — where
+        it can hear <em>both</em> — and marks the best relay spot.
+      </p>
+
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="mt-btn mt-btn-primary mt-btn-sm flex-1"
+          :disabled="!canFind"
+          @click="store.findBridge()"
+        >
+          Find bridge
+        </button>
+        <button v-if="store.bridgeResult" type="button" class="mt-btn mt-btn-secondary mt-btn-sm" @click="store.clearBridge()">
+          Clear
+        </button>
+      </div>
+
+      <div
+        v-if="store.bridgeState === 'error'"
+        class="mt-3 rounded-lg border border-danger bg-danger-bg p-2 text-sm text-on-danger-bg"
+        role="alert"
+      >
+        {{ store.bridgeError }}
+      </div>
+
+      <div v-if="store.bridgeState === 'computing'" class="mt-3 flex items-center gap-2 text-sm text-ink-muted">
+        <span class="mt-spinner" role="status" aria-hidden="true"></span>
+        Computing coverage at each point…
+      </div>
+
+      <div v-if="store.bridgeResult && store.bridgeState === 'done'" class="mt-3">
+        <template v-if="store.bridgeResult.directLink">
+          <div class="mt-link-verdict mt-verdict-good">
+            <span class="mt-link-verdict-dot" aria-hidden="true"></span>
+            Direct link exists — no bridge needed
+          </div>
+          <dl class="mt-link-stats mt-2">
+            <div><dt>Direct-link margin</dt><dd :class="(store.bridgeResult.directMarginDb ?? 0) >= 0 ? 'mt-pos' : 'mt-neg'">{{ store.bridgeResult.directMarginDb == null ? '—' : `${(store.bridgeResult.directMarginDb >= 0 ? '+' : '')}${fmt(store.bridgeResult.directMarginDb, 1)} dB` }}</dd></div>
+          </dl>
+          <p class="mt-hint mt-2">
+            The site and this point already reach each other directly, so no
+            additional relay is required.
+          </p>
+        </template>
+        <template v-else-if="store.bridgeResult.hasOverlap">
+          <div class="mt-link-verdict mt-verdict-good">
+            <span class="mt-link-verdict-dot" aria-hidden="true"></span>
+            Bridge possible — {{ nCells }} candidate cell{{ nCells === 1 ? '' : 's' }} shown on the map
+          </div>
+          <dl class="mt-link-stats mt-2">
+            <div><dt>Bridgeable area</dt><dd>{{ fmt(store.bridgeResult.areaKm2) }} km²</dd></div>
+            <div><dt>Best relay</dt><dd>{{ store.bridgeResult.best ? `${fmt(store.bridgeResult.best.lat, 5)}, ${fmt(store.bridgeResult.best.lon, 5)}` : '—' }}</dd></div>
+            <div><dt>Signal at best</dt><dd>{{ store.bridgeResult.best ? fmt(store.bridgeResult.best.score, 1) : '—' }} dBm</dd></div>
+            <div><dt>Margin</dt><dd :class="(store.bridgeResult.bestMarginDb ?? 0) >= 0 ? 'mt-pos' : 'mt-neg'">{{ store.bridgeResult.bestMarginDb == null ? '—' : `${(store.bridgeResult.bestMarginDb >= 0 ? '+' : '')}${fmt(store.bridgeResult.bestMarginDb, 1)} dB` }}</dd></div>
+          </dl>
+          <p class="mt-hint mt-2">
+            The green shaded region is every cell that can hear both the site and
+            this target; the pin marks the spot with the strongest common signal.
+          </p>
+        </template>
+        <template v-else>
+          <div class="mt-link-verdict mt-verdict-bad">
+            <span class="mt-link-verdict-dot" aria-hidden="true"></span>
+            No single relay can bridge these two points
+          </div>
+          <p class="mt-hint mt-2">
+            With these parameters there is no place that reaches both. Try a
+            relay between them with higher power or a taller antenna, or plan a
+            2-relay chain.
+          </p>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -102,7 +188,19 @@ function applyCoords() {
   store.setLinkTarget(lat, lon);
 }
 
-const fmt = (n: number, d: number) => (Number.isFinite(n) ? n.toFixed(d) : '–');
+const fmt = (n: number, d = 0) => (Number.isFinite(n) ? n.toFixed(d) : '–');
+
+// Bridge-node placement: enabled once a target exists and no computation is in
+// flight. Only shown to the user when the direct link is below sensitivity.
+const canFind = computed(() => !!store.linkTarget && store.bridgeState !== 'computing');
+
+const nCells = computed(() => {
+  const r = store.bridgeResult;
+  if (!r) return 0;
+  let n = 0;
+  for (let i = 0; i < r.overlap.dbm.length; i++) if (!Number.isNaN(r.overlap.dbm[i])) n++;
+  return n;
+});
 
 const rayColor = computed(() => {
   const a = store.linkAnalysis;

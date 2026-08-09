@@ -142,3 +142,66 @@ export function coverageImage(
     ],
   };
 }
+
+/**
+ * Render the bridgeable (coverage-overlap) region as a DISTINCT green
+ * "recommended relay zone" highlight — deliberately a different hue from the
+ * normal coverage heatmaps (plasma/…), so it reads as the spot to add a node
+ * rather than another coverage disk. Stronger overlap (min of the two signals)
+ * -> brighter + more opaque.
+ */
+export function bridgeSelectionImage(
+  result: CoverageResult,
+  display: DisplaySettings,
+  sensitivityDbm: number
+): CoverageImage {
+  const { width, height, dbm, bounds } = result;
+  const min = display.min_dbm;
+  const max = display.max_dbm;
+  const span = max > min ? max - min : 1;
+
+  const srcRGBA = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const v = dbm[i];
+    if (Number.isNaN(v) || v < sensitivityDbm) continue; // transparent
+    let t = (v - min) / span;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    const o = i * 4;
+    // Teal-green ramp (distinct from the coverage colormaps): dimmer/translucent
+    // at the edges, bright solid green at the strongest overlap.
+    srcRGBA[o] = 34 + Math.round(t * 96); //  34 -> 130
+    srcRGBA[o + 1] = 156 + Math.round(t * 82); // 156 -> 238
+    srcRGBA[o + 2] = 110 + Math.round(t * 60); // 110 -> 170
+    srcRGBA[o + 3] = Math.round(150 + t * 100); // alpha 150 -> 250
+  }
+
+  const yN = mercatorY(bounds.north);
+  const yS = mercatorY(bounds.south);
+  const dpp = result.pixelDegrees;
+  const out = new Uint8ClampedArray(srcRGBA.length);
+  const rowBytes = width * 4;
+  for (let r = 0; r < height; r++) {
+    const y = yN + ((r + 0.5) / height) * (yS - yN);
+    const lat = latFromMercatorY(y);
+    let srcRow = Math.floor((bounds.north - lat) / dpp);
+    if (srcRow < 0) srcRow = 0;
+    if (srcRow >= height) srcRow = height - 1;
+    out.set(srcRGBA.subarray(srcRow * rowBytes, (srcRow + 1) * rowBytes), r * rowBytes);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d')!.putImageData(new ImageData(out, width, height), 0, 0);
+
+  return {
+    url: canvas.toDataURL('image/png'),
+    coordinates: [
+      [bounds.west, bounds.north],
+      [bounds.east, bounds.north],
+      [bounds.east, bounds.south],
+      [bounds.west, bounds.south],
+    ],
+  };
+}
