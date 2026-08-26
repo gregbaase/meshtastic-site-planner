@@ -12,7 +12,7 @@
  * engine, and any already-fetched terrain work offline. Bump CACHE to evict.
  */
 
-const CACHE = 'mt-app-v1';
+const CACHE = 'mt-app-v8';
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './icon.svg', './favicon.ico'];
 
 self.addEventListener('install', (event) => {
@@ -28,7 +28,15 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) =>
+        Promise.all(
+          keys
+            // Keep the app cache plus terrain caches (meshtastic-terrain-*):
+            // evicting those would wipe every cached SRTM page on each deploy.
+            .filter((k) => k !== CACHE && !k.startsWith('meshtastic-terrain'))
+            .map((k) => caches.delete(k))
+        )
+      )
       .then(() => self.clients.claim())
   );
 });
