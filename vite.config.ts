@@ -5,6 +5,12 @@ import tailwindcss from '@tailwindcss/vite'
 // https://vite.dev/config/
 export default defineConfig(({ command }) => ({
   plugins: [vue(), tailwindcss()],
+  server: {
+    // Allow the Tailscale magic-DNS hostname so the dev app is reachable over
+    // HTTPS via `tailscale serve` (Vite blocks unknown Host headers as a
+    // DNS-rebinding guard, which 403s the FQDN). Dev-only convenience.
+    allowedHosts: ['lenovo-ideapad-yoga-11s.tail9b7a54.ts.net'],
+  },
   // Relative asset paths in production so the build works unchanged at the
   // default GitHub Pages project URL (…github.io/meshtastic-site-planner/)
   // AND at a custom domain root (site.meshtastic.org). The app has no
